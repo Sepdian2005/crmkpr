@@ -46631,7 +46631,7 @@ function markPage(c,dt){const o=document.createElement('canvas');o.width=c.width
   dt.frames.forEach(q=>tag(q.id,q.x+4,q.y+4,'#008a2e',16));
   return o;}
 
-function snapAll(){G.gr=G.gr||[];let miss=0;G.fl.forEach(f=>{if(f.fixed)return;f.sn=null;try{const P=G.gr[f.p]||(G.gr[f.p]=grayOf(G.pg[f.p]));
+function snapAll(){G.gr=G.gr||[];let miss=0;G.fl.forEach(f=>{if(f.fixed||f.free)return;f.sn=null;try{const P=G.gr[f.p]||(G.gr[f.p]=grayOf(G.pg[f.p]));
   if(f.t==='text'&&f.v)f.sn=snapComb(P,f);else if(f.t==='check')f.sn=snapCheck(P,f);else if(f.t==='photo')f.sn=snapRect(P,f);
   if(f.t==='text'&&f.v&&!f.sn)miss++;}catch(e){console.warn('snap',e);}});
   // satu ukuran huruf untuk semua kolom: kuartil bawah ukuran kotak (muat di hampir semua kotak)
@@ -46802,11 +46802,26 @@ async function afFill(PL, bytes, ops, opt) {
   if (col) touched.forEach((f) => { try { let da = f.acroField.getDefaultAppearance() || '/Helv 0 Tf 0 g'; da = da.replace(/(?:[-+]?(?:\d*\.)?\d+\s+){1,4}(?:g|rg|k)(?=\s|$)/g, ' ').replace(/\s+/g, ' ').trim(); f.acroField.setDefaultAppearance(da + ' ' + col.join(' ') + ' rg'); } catch (e) { /* abaikan */ } });
   // gambar di halaman: foto 3x4 (k:'f') dan tanda tangan (k:'g', png transparan, muat di dalam kotak tanpa terdistorsi)
   for (const op of (ops || [])) {
-    if ((op.k !== 'f' && op.k !== 'g') || !op.img) continue;
+    if (op.k !== 'f' && op.k !== 'g') continue;
+    if (!op.img && !(op.k === 'g' && String(op.nm || '').trim())) continue;   // nama penandatangan tetap dicetak walau TTD belum diupload
     try {
-      const pg = doc.getPage(op.p), im = op.png ? await doc.embedPng(op.img) : await doc.embedJpg(op.img);
-      if (op.k === 'f') pg.drawImage(im, { x: Math.min(op.r[0], op.r[2]), y: Math.min(op.r[1], op.r[3]), width: Math.abs(op.r[2] - op.r[0]), height: Math.abs(op.r[3] - op.r[1]) });
-      else { const b = op.box, bw = b[2] - b[0], bh = b[3] - b[1], sc = Math.min(bw / im.width, bh / im.height); pg.drawImage(im, { x: b[0] + (bw - im.width * sc) / 2, y: b[1] + (bh - im.height * sc) / 2, width: im.width * sc, height: im.height * sc }); }
+      const pg = doc.getPage(op.p), im = op.img ? (op.png ? await doc.embedPng(op.img) : await doc.embedJpg(op.img)) : null;
+      if (op.k === 'f') { if (im) pg.drawImage(im, { x: Math.min(op.r[0], op.r[2]), y: Math.min(op.r[1], op.r[3]), width: Math.abs(op.r[2] - op.r[0]), height: Math.abs(op.r[3] - op.r[1]) }); }
+      else {
+        const b = op.box, bw = b[2] - b[0], bh = b[3] - b[1];
+        const nm = String(op.nm || '').replace(/\s+/g, ' ').trim();
+        const nb = nm ? Math.min(11, Math.max(6.5, bh * 0.26)) : 0;   // ruang nama penandatangan di bawah tanda tangan
+        const ih = Math.max(3, bh - nb);
+        if (im) { const sc = Math.min(bw / im.width, ih / im.height); pg.drawImage(im, { x: b[0] + (bw - im.width * sc) / 2, y: b[1] + nb + (ih - im.height * sc) / 2, width: im.width * sc, height: im.height * sc }); }
+        if (nm) {
+          let fs2 = Math.min(7.5, nb * 0.88); if (fs2 < 3.2) fs2 = 3.2;
+          let t2 = opt.upper ? nm.toUpperCase() : nm;
+          while (fs2 > 4.2 && font.widthOfTextAtSize(t2, fs2) > bw - 2) fs2 -= 0.3;
+          if (font.widthOfTextAtSize(t2, fs2) > bw - 2) { while (t2.length > 4 && font.widthOfTextAtSize(t2 + '…', fs2) > bw - 2) t2 = t2.slice(0, -1); t2 += '…'; }
+          const tw = font.widthOfTextAtSize(t2, fs2);
+          pg.drawText(t2, { x: b[0] + Math.max(0, (bw - tw) / 2), y: b[1] + Math.max(0.8, (nb - fs2) / 2), size: fs2, font });
+        }
+      }
     } catch (e) { warn.push('gambar: ' + e.message); }
   }
   if (userFs && sized.clamped.length) warn.push('Ukuran ' + userFs + ' pt tidak muat di ' + sized.clamped.length + ' kolom (mis. ' + sized.clamped.slice(0, 3).join(', ') + ') — kolom itu memakai ukuran terbesar yang pas dan kotaknya ditinggikan sedikit.');
@@ -46900,8 +46915,10 @@ function coverC(src, W, H) {
   x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(src, (c.width - w) / 2, (c.height - h) * 0.2, w, h);
   return c;
 }
+// aturan pengekang: AI tidak boleh menebak / memindahkan nilai ke kolom berlainan arti (dipakai semua prompt pengisian form)
+const RULE_JANGAN = 'PEMBACAAN FORM DIDAHULUKAN: tiap kolom membawa l = label cetak hasil pembacaan form, a = arti kolom, b = blok/kelompok kolom (mis. DATA PASANGAN), dan x = 1 bila arti kolom tidak jelas. Isi kolom HANYA bila arti/label/bloknya memang meminta jenis data itu; kolom x=1 JANGAN diisi. JANGAN memakai satu nilai untuk kolom yang artinya berbeda (mis. nama perusahaan ke kolom nama orang/pasangan, jenis pekerjaan ke kolom jabatan/bidang usaha/keterangan, alamat rumah ke alamat kantor/penagihan/bank, nama atasan ke kolom nama pemohon): nilai yang sama hanya boleh diulang pada kolom yang memang meminta data yang sama, maksimal 3 kolom. CENTANG: centang hanya kotak yang teks pilihannya PERSIS salah satu data yang ada; pada satu kelompok pilihan tunggal (agama, jenis kelamin, status kawin, status rumah, pendidikan, jenis pekerjaan, bentuk badan usaha, status kepemilikan, tipe produk, penggunaan, sistem pembayaran) cukup SATU kotak, yaitu yang paling cocok dengan data. Bila datanya tidak ada: jangan mencentang apa pun, jangan memilih opsi hanya karena kolomnya masih kosong, dan jangan menyalin pilihan dari baris/kelompok lain. '
 const RULE_KERJA = 'ALAMAT PEKERJAAN (pemohon dan pasangan): KAJI DULU di mana orang itu BERTUGAS. Bila data_pekerjaan memuat penempatan_unit/penempatan_alamat (unit kerja, tempat tugas, mis. sekolah/puskesmas/dinas/cabang), pakai penempatan itu sebagai alamat perusahaan/instansi (boleh diawali nama unitnya, mis. "SDN 1 IBUN, JL ..."); nama instansi induk tetap di kolom Nama Perusahaan/Instansi. JANGAN langsung memakai alamat kop surat. Hanya bila TIDAK ADA penempatan baru pakai alamat_perusahaan/alamat kop surat. Bila alamat tidak lengkap, LENGKAPI sendiri kelurahan/desa, kecamatan, kota/kabupaten dan provinsi berdasarkan nama jalan/desa/unit/kota yang tertulis dan pengetahuanmu tentang wilayah Indonesia (mis. Jl. Raya Soreang → Kel. Soreang, Kec. Soreang, Kab. Bandung, Jawa Barat); JANGAN mengarang nama jalan, nomor, RT/RW atau kode pos. Setiap hasil perkiraan kelurahan/kecamatan/provinsi WAJIB ditulis di peringatan ("alamat kantor: kelurahan X diperkirakan AI — cek"). ';
-const RULE_AGUNAN = 'AGUNAN (rumah yang dibeli): data_agunan memuat proyek, pengembang, alamat_proyek, blok_nomor (mis. "A-12", "B2/5": pisahkan jadi Blok dan No), tipe_rumah, luas_bangunan_per_tanah (format LB/LT). Alamat Lokasi Agunan = alamat_proyek (jalan/desa di kolom alamat panjang; RT, RW, kelurahan, kecamatan, kota, provinsi, kode pos ke kolom masing-masing; lengkapi kelurahan/kecamatan bila hanya sebagian yang diisi) + Blok + No dari blok_nomor. Luas Tanah/Luas Bangunan dari luas_bangunan_per_tanah. Nama Pengembang, Nama Proyek Perumahan, dan Nama Penjual = pengembang/proyek. Status Kepemilikan, No. Sertifikat, Atas Nama, IMB: HANYA dari catatan sales, jangan menebak. ';
+const RULE_AGUNAN = 'AGUNAN (rumah yang dibeli): data_agunan memuat proyek, pengembang, alamat_proyek, blok_nomor (mis. "A-12", "B2/5": pisahkan jadi Blok dan No), tipe_rumah, luas_bangunan_per_tanah (format LB/LT). Alamat Lokasi Agunan = alamat_proyek (jalan/desa di kolom alamat panjang; RT, RW, kelurahan, kecamatan, kota, provinsi, kode pos ke kolom masing-masing) + Blok + No dari blok_nomor. ALAMAT LOKASI BOLEH DILENGKAPI AI: bila alamat_proyek hanya sebagian (mis. hanya nama perumahan/jalan/kampung + kota), isi kelurahan/desa, kecamatan, kota/kabupaten, dan provinsi hasil pembacaanmu atas wilayah Indonesia (mis. proyek di Ibun, Kab. Bandung diisi Kel. Ibun, Kec. Ibun, Kab. Bandung, Jawa Barat) dan sebut di peringatan bahwa kelurahan/kecamatan agunan diperkirakan AI. JANGAN mengarang nama jalan, nomor rumah, blok, RT/RW, dan kode pos, dan jangan memindahkan alamat KTP/kantor ke alamat agunan. Luas Tanah/Luas Bangunan dari luas_bangunan_per_tanah. Nama Pengembang, Nama Proyek Perumahan, dan Nama Penjual = pengembang/proyek. Status Kepemilikan, No. Sertifikat, Atas Nama, IMB: HANYA dari catatan sales, jangan menebak. ';
 const RULE_TTD_A = 'TANDA TANGAN: untuk area tanda tangan pemohon dan pasangan buat field {"p":nomor halaman,"t":"ttd","o":"pemohon"|"pasangan","x":..,"y":..,"w":..,"h":..} (pecahan 0-1 dari halaman): area KOSONG tepat di atas garis/nama penandatangan dan di bawah tulisan "Tanda tangan", tidak menimpa teks, foto, atau kotak lain. ';
 const afGen = (n) => String(n).replace(/topmostSubform|Subform|Page\d*|text|field|form|check ?box|check|box|radio|group|button|btn|undefined|untitled|fill|input|f\d+_\d+|\[\d+\]/gi, '').replace(/[^A-Za-z]/g, '').length < 4;
 const afNorm = (r) => [Math.min(r[0], r[2]), Math.min(r[1], r[3]), Math.max(r[0], r[2]), Math.max(r[1], r[3])];
@@ -47017,6 +47034,7 @@ function afMarks(af, only) {
 const SYS_MAP = 'PETA ISTILAH FORM BANK (tulisan di form → sumber data): NAMA LENGKAP / Nama Sesuai KTP → identitas.nama; No. KTP / NIK → identitas.nik; ALAMAT RUMAH / alamat sesuai KTP → identitas.alamat + rt_rw + kel_desa + kecamatan + kota + provinsi (ke kolom masing-masing); ALAMAT RUMAH TERKINI / alamat tinggal / domisili → alamat_tinggal_pemohon; NAMA GADIS IBU KANDUNG → catatan sales; NPWP, NAMA NPWP, ALAMAT NPWP → identitas.npwp; NO. TELEPON / telp rumah → catatan sales; NO. HANDPHONE / HP / seluler → identitas/catatan; DAPAT DIHUBUNGI PADA JAM → catatan sales; PENDIDIKAN TERAKHIR → catatan sales; AGAMA → identitas.agama; STATUS PERKAWINAN / status kawin → identitas.status_kawin + data pasangan; JENIS KELAMIN → identitas.gender; PEKERJAAN → data_pekerjaan / data_sistem; NAMA PERUSAHAAN / instansi → data_pekerjaan; JABATAN → data_pekerjaan; LAMA BEKERJA / masa kerja / lama usaha → data_pekerjaan; PENGHASILAN / gaji per bulan → data_pekerjaan / slip gaji / data_sistem; BIAYA RUMAH TANGGA / pengeluaran → catatan sales; DATA PASANGAN (nama, KTP, pekerjaan, alamat) → data pasangan / KK; DATA AGUNAN (alamat lokasi, blok, no, tipe rumah, luas tanah/bangunan, harga, pengembang, proyek, penjual) → data_agunan; DATA PEMBIAYAAN (harga, uang muka, plafond/nilai pembiayaan, tenor/jangka waktu) → data_sistem; NIP petugas, CIF, NO. REKENING, kode cabang, nomor aplikasi, barcode, dan blok "DIISI OLEH BANK / PETUGAS BANK" → JANGAN diisi. PILIHAN/CENTANG UMUM (isi hanya bila opsinya ada di form): JENIS NASABAH (Baru/Eksisting) → Nasabah Baru untuk pengajuan ini; ALASAN MEMBUKA REKENING (Bunga/Hadiah/ATM/Lokasi/Syarat Kredit/Layanan) → centang Layanan (dan Syarat Kredit bila ada); BERTINDAK UNTUK (Diri Sendiri/Pihak Yang Diwakili Atas Nama) → Diri Sendiri; MAKSUD DAN TUJUAN (Simpanan/Investasi/Pinjaman) → sesuai data_sistem.jenis (KPR = pinjaman/pembelian rumah); JENIS SETORAN UNTUK PEMBUKAAN REKENING (Tunai/Pemindahbukuan/Transfer) → Pemindahbukuan; SUMBER DANA → penghasilan/gaji; STATUS RUMAH (Milik Sendiri/Sewa/Keluarga/Dinas) → catatan sales; PENDIDIKAN/PENGGUNAAN/TIPE PRODUK → pilihan yang paling sesuai data_sistem. BLOK DATA PASANGAN (kolom di bagian/judul yang memuat kata pasangan, suami, istri, atau penjamin): nama, NIK/No. KTP, tempat & tanggal lahir, pekerjaan, dan penghasilan pasangan WAJIB dari data pasangan (KK/KTP pasangan/catatan sales) — DILARANG memakai nama, NIK, atau tanggal lahir PEMOHON di blok pasangan; bila data pasangan tidak ada, kosongkan. Sebaliknya blok DATA PEMOHON tidak boleh diisi data pasangan. ';
 const SYS_LENGKAP = 'KELENGKAPAN (WAJIB): isi SEMUA kolom yang datanya MEMANG ADA. Kolom yang bisa diisi jangan dibiarkan kosong hanya karena labelnya tidak lazim, tidak terbaca, singkatan, atau urutannya tidak biasa. Kenali kolom dari: l (label cetak terdekat), r (seluruh teks baris, termasuk opsi cetak), n (nama internal kolom; sering memuat arti kolom, mis. ...naMa..., ...alamat..., ...tglLahir..., ...penghasilan...), g (judul kelompok pilihan), s (judul bagian). Bila l kosong atau aneh, pakai n dan r. Bagian yang paling sering terlewat: DATA PEKERJAAN & PENGHASILAN, DATA PASANGAN, DATA AGUNAN, DATA PEMBIAYAAN, dan bagian pilihan/centang — periksa semuanya sampai selesai sebelum menjawab. Jangan mengarang; kolom yang benar-benar tidak ada datanya biarkan kosong (jangan diisi tanda "-" atau 0). DILARANG mengisi kolom dengan teks pengganti/penanda apa pun — contoh yang sering muncul: "(data tidak tersedia)", "(nama ... tidak tersedia)", "belum ada", "isi sendiri", "N/A", "-", "0". Bila datanya tidak ada, JANGAN sertakan kolom itu dalam jawaban. Nilai harus PERSIS dari sumber data yang diberikan: angka, nama, dan tanggal tidak boleh diubah, ditambah, ditebak, atau dipinjam dari kolom lain (khususnya blok pasangan memakai data pasangan, bukan data pemohon). ';
 const PRMB = (tgp) => 'Kamu mengisi formulir aplikasi KPR bank yang SUDAH punya kolom isian PDF. Input JSON berisi kolom[] (daftar kolom bernomor i): h=halaman, s=nomor judul bagian (lihat bagian[]), n=nama internal kolom, l=label cetak terdekat, r=seluruh teks cetak di baris itu (memuat label dan OPSI PILIHAN yang tercetak), t=tipe (teks|centang|pilih), k=jumlah kotak/huruf yang muat normal (kolom teks; teks sampai ±2×k tetap bisa ditulis penuh karena huruf dirapatkan, jadi TULIS LENGKAP, singkat hanya bila lebih dari 2×k), o=daftar opsi (tipe pilih), c=true bila kolom berupa kotak satu-huruf, g=judul baris/kelompok pilihan (mis. JENIS KELAMIN). Untuk t=centang: l = teks cetak tepat di KANAN kotak (nama pilihannya), jadi centang HANYA kotak yang l-nya cocok dengan data; jangan mencentang pilihan pada baris yang tidak punya data (mis. Status Kantor bila tidak ada keterangan). ' +
+  RULE_JANGAN +
   'Balas HANYA JSON satu baris: {"fields":[{"i":1,"v":"isi"},{"i":7,"v":true},{"i":9,"v":"Islam"},{"i":12,"foto":"pemohon"}],"peringatan":[""]}. teks: v string. centang: sertakan HANYA yang harus dicentang (v true). pilih: v = salah satu opsi persis. foto: foto pemohon atau pasangan menurut label/baris terdekat. ' +
   'Kolom bertipe teks yang menjadi tempat memilih opsi cetak (mis. Agama: Islam Protestan..., Status Rumah, Jenis Kelamin, Pendidikan, Status Pernikahan, Tipe Produk, Penggunaan, Sistem Pembayaran, Jenis Pekerjaan, Bentuk Badan Usaha) diisi SATU teks pilihan persis seperti tercetak di baris r (mis. "Islam"), hanya bila yakin. ' +
   SYS_LENGKAP + SYS_MAP +
@@ -47030,7 +47048,7 @@ const PRMB = (tgp) => 'Kamu mengisi formulir aplikasi KPR bank yang SUDAH punya 
   'TANGGAL PENGAJUAN dekat tanda tangan = HARI INI: bila ada kolom terpisah, isi SEMUANYA — tempat (kota; dari catatan sales/bank/lokasi kantor bila diketahui), tanggal (angka saja, mis. "24"), dan bulan_tahun (mis. "10-2026" bila kolom sempit; "OKTOBER 2026" bila k ≥ 12). Bila satu kolom saja: "Kota, ' + tgp + '". Kolom yang diisi oleh BANK (barcode, nomor aplikasi, kode proper/developer/cabang, "diisi oleh bank", "untuk keperluan bank") dan kolom yang tidak ada datanya JANGAN disertakan. Nama kolom/judul bagian bisa sama di beberapa tempat (mis. alamat pasangan vs alamat kantor pasangan): bedakan lewat s (bagian) dan r. Jangan mengarang. peringatan = konflik antar sumber data atau data penting yang belum ada (sebut label kolomnya). JSON ringkas satu baris tanpa komentar.';
 // putaran 2: melengkapi kolom yang MASIH KOSONG setelah putaran pertama (form bank lain sering punya banyak kolom)
 const PRMP = (tgp) => 'Kamu MELENGKAPI kolom formulir aplikasi KPR bank (format bank apa pun) yang masih KOSONG setelah putaran pertama. Input JSON berisi kolom_masih_kosong[]: i=nomor kolom, h=halaman, n=nama internal kolom, l=label cetak terdekat, r=seluruh teks cetak di baris itu (memuat label dan opsi pilihan), t=tipe (teks|centang|pilih), k=jumlah kotak (tipe teks), o=daftar opsi (tipe pilih), g=judul kelompok pilihan, c=true bila kolom kotak satu-huruf, s=nomor judul bagian (lihat bagian[]). Sumber data: catatan_sales_wa (PRIORITAS TERTINGGI), identitas (OCR KTP/KK/NPWP), data_pekerjaan, data_agunan, data_sistem. Tanggal hari ini: ' + tgp + '. ' +
-  SYS_LENGKAP + SYS_MAP +
+  SYS_LENGKAP + SYS_MAP + RULE_JANGAN +
   'Aturan: (1) isi HANYA kolom yang datanya memang tersedia di sumber data; (2) jangan mengubah kolom yang sudah terisi (tidak dikirim ke kamu); (3) centang hanya kotak yang harus dicentang (v true); (4) tipe pilih: v = salah satu opsi persis seperti di o (bila tidak ada opsi yang pas, kosongkan); (5) tipe teks: tulis lengkap sesuai format yang tampak di baris r (tanggal dd/mm/yy atau dd/mm/yyyy, uang dengan titik ribuan tanpa Rp, RT/RW angka saja, teks sampai ±2x k kotak tetap ditulis penuh karena huruf dirapatkan); (6) jangan menuliskan label ke dalam kolom isian. Balas HANYA JSON satu baris: {"fields":[{"i":1,"v":"isi"},{"i":7,"v":true},{"i":9,"v":"Islam"}],"peringatan":[""]}. peringatan = data penting yang belum ada (sebut label kolomnya) atau konflik antar sumber.';
 function coverJpeg(src, W, H) { return afDataURLBytes(coverC(src, W, H).toDataURL('image/jpeg', 0.92)); }
 // tanda tangan: putihkan-latar jadi transparan, potong bagian kosong, kecilkan agar PDF tidak berat
@@ -47080,7 +47098,7 @@ function afApply(af, r) {
   return warn.concat(r.peringatan || []).filter(Boolean);
 }
 // ===== ATURAN PASTI (tanpa AI): kolom baku yang jelas diisi langsung dari data yang sudah ada =====
-function afTxt(q) { return String((q.label || '') + ' ' + (q.row || '') + ' ' + (q.name || '') + ' ' + (q.grp || '')).toLowerCase().replace(/[_\-.]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+function afTxt(q) { return String((q.l2 || q.label || '') + ' ' + (q.arti || '') + ' ' + (q.blk || '') + ' ' + (q.row || '') + ' ' + (q.name || '') + ' ' + (q.grp || '')).toLowerCase().replace(/[_\-.]+/g, ' ').replace(/\s+/g, ' ').trim(); }
 function afRule(af, k, prof, cx) {
   const PF = prof || {}, S = cx.sis || {}, pas = PF.data_pasangan || {}, AT = (cx.alamatTinggal || {});
   const atAl = (AT.alamat && typeof AT.alamat === 'object') ? (AT.alamat.alamat || '') : String(AT.alamat || '');
@@ -47125,7 +47143,7 @@ function afRule(af, k, prof, cx) {
   const LB = (q) => (q.label || q.name || 'kolom');
   let fill = 0, fix = 0, rep = 0; const note = [];
   af.fields.forEach((q) => {
-    if (q.kind === 'foto' || q.skip) return;
+    if (q.kind === 'foto' || q.skip || q.ragu) return;
     // 0) buang teks pengganti/penanda hasil AI: "(DATA TIDAK TERSEDIA)", "-", "N/A"
     if (q.kind === 'teks' && q.v) {
       const raw = String(q.v).trim();
@@ -47190,7 +47208,7 @@ function afOps(af) {
       try { return { k: 'f', p: q.p, r: q.r, img: coverJpeg(src, (q.r[2] - q.r[0]) * 5, (q.r[3] - q.r[1]) * 5) }; } catch (e) { return null; }
     }
     return null;
-  }).filter(Boolean).concat(((G.af && G.af.sigs) || []).map((g) => { const s = G.pimg && G.pimg[g.kind === 'pasangan' ? 'ttd2' : 'ttd']; return s ? { k: 'g', p: g.p, box: g.box, img: s.bytes, png: true } : null; }).filter(Boolean));
+  }).filter(Boolean).concat(((G.af && G.af.sigs) || []).map((g) => { const s = G.pimg && G.pimg[g.kind === 'pasangan' ? 'ttd2' : 'ttd'], nm = ((G.ttdNm || {})[g.kind] || ''); return (s || nm) ? { k: 'g', p: g.p, box: g.box, img: s ? s.bytes : null, png: true, nm } : null; }).filter(Boolean));
 }
 async function afBuild(flat) { const PL = await loadPL(); return afFill(PL, G.af.bytes, afOps(G.af), { clean: G.afClean, upper: G.up, comb: G.pas, flatten: !!flat, sty: G.sty }); }
 async function afPreview(bytes) {
@@ -47237,6 +47255,7 @@ function uiAF(extraWarn) {
     '<div style="font-size:12px;margin:4px 0;">🧩 Mesin <b>kolom PDF</b> · ' + af.fields.length + ' kolom ditemukan (tiap kolom punya ID), <b>' + n + '</b> terisi · teks langsung masuk ke kolom form (bukan gambar), PDF tetap bisa diedit.</div>' +
     '<div class="ff-tpl">🆔 Kode form: <code>' + E(af.fp) + '</code> · <span id="ffTplNote">' + E(G.tplNote || 'belum ada template untuk form ini') + '</span> <button ' + bt + ' onclick="FFAI.tplSave()">💾 Simpan pengaturan form ini</button> <button ' + bt + ' onclick="FFAI.tplDel()">🗑 Lupakan</button><div class="ff-hint">Template menyimpan per ID kolom: jumlah kotak, kolom yang dilewati, dan gaya huruf. Upload form bank yang sama lagi → otomatis dipakai.</div></div>' +
     '<div class="ff-tpl">💾 Hasil terisi: <span id="ffDataNote">' + E(G.dataNote || 'belum disimpan untuk konsumen ini') + '</span><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:5px;"><button ' + bt + ' onclick="FFAI.dSave()">💾 Simpan isian ke Firebase</button><button ' + bt + ' onclick="FFAI.dPdf()">📎 Simpan PDF terisi ke Dokumen</button></div><div class="ff-hint">Isian (nilai, centang, pilihan, foto, gaya huruf) disimpan per konsumen + kode form — form yang dibuka lagi langsung terisi, bukan form kosong. PDF terisi disimpan ke 📎 Dokumen konsumen (Firebase Storage) agar bisa dilihat/diunduh dari perangkat lain.</div></div>' +
+    '<div class="ff-tpl">🧠 <b>Peta form</b> · ' + E(G.petaNote || 'AI membaca label tiap kolom sebelum mengisi form') + (G.guardNote ? '<div class="ff-hint">🛡 ' + E(G.guardNote) + '</div>' : '') + ' <button ' + bt + ' onclick="FFAI.petaAgain()">🔄 Baca ulang form</button></div>' +
     styBar('FFAI.sty()') +
     '<div style="display:flex;gap:10px;flex-wrap:wrap;font-size:12px;align-items:center;margin:6px 0;"><label class="ff-ck" style="flex:none"><input type="checkbox" id="ffup" ' + (G.up ? 'checked' : '') + ' onchange="FFAI.afOpt()"> HURUF KAPITAL</label><label class="ff-ck" style="flex:none"><input type="checkbox" id="ffpas" ' + (G.pas ? 'checked' : '') + ' onchange="FFAI.afOpt()"> Pas ke kotak per huruf</label><label class="ff-ck" style="flex:none"><input type="checkbox" id="ffclean" ' + (G.afClean ? 'checked' : '') + ' onchange="FFAI.afOpt()"> Hilangkan warna kolom (siap cetak)</label><label class="ff-ck" style="flex:none"><input type="checkbox" id="ff2p" ' + (G.two ? 'checked' : '') + ' onchange="FFAI.twoP(this.checked)"> Lengkapi kolom kosong (putaran 2)</label></div>' +
     '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0;"><button ' + bp + ' onclick="FFAI.afDl(false)">⬇ Download PDF (tetap bisa diedit)</button><button ' + bt + ' onclick="FFAI.afDl(true)">⬇ Download PDF final (datar, untuk dikirim)</button></div>' +
@@ -47272,8 +47291,10 @@ function tplSave() {
   G.tplNote = 'Template tersimpan (' + Object.keys(f).length + ' pengaturan kolom' + cloud + ')'; const el = $('ffTplNote'); if (el) el.textContent = G.tplNote; toast('💾 Template form disimpan');
 }
 function tplDel() {
-  const af = G.af; if (!af) return; if (!confirm('Lupakan template form ini? Pengaturan kotak/lewati berikutnya kembali otomatis.')) return;
+  const af = G.af; if (!af) return; if (!confirm('Lupakan template form ini? Pengaturan kotak/lewati dan peta label kolom berikutnya dibaca ulang otomatis.')) return;
   try { localStorage.removeItem('ffTpl:' + af.fp); } catch (e) { /* abaikan */ }
+  try { localStorage.removeItem(petaKey(af.fp)); } catch (e) { /* abaikan */ }
+  G.petaNote = 'Peta form dilupakan — akan dibaca ulang saat mengisi form';
   try { if (!medViewer() && window._fbReady && window._fb) { const fb = window._fb; fb.set(fb.ref(fb.database, 'kpr_ff_tpl/' + af.fp), null).catch(() => {}); } } catch (e) { /* abaikan */ }
   G.tplNote = 'Template dihapus'; const el = $('ffTplNote'); if (el) el.textContent = G.tplNote;
 }
@@ -47549,12 +47570,123 @@ function ffCss() {
     '.ff-hint{font-size:10.5px;color:var(--text3);margin-top:3px}.ff-mg{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}.ff-mc{border:1px solid var(--border,#ddd);border-radius:8px;padding:6px;display:flex;flex-direction:column;gap:5px;align-items:flex-start;font-size:12px}.ff-mt{font-weight:600}.ff-ph{width:84px;height:60px;display:flex;align-items:center;justify-content:center;border:1px dashed var(--border,#bbb);border-radius:4px;color:var(--text3);font-size:11px}';
   document.head.appendChild(s);
 }
+// ===== PETA FORM: AI membaca form bank LEBIH DULU (label & arti tiap kolom) sebelum data dipetakan =====
+// Hasilnya disimpan per kode form supaya form bank yang sama tidak perlu dibaca ulang.
+const PRMPETA = 'Kamu MEMBACA formulir aplikasi pembiayaan/KPR bank di Indonesia yang diunggah sebagai PDF berkolom isian. Kamu BELUM mengisi data apa pun — tugasmu hanya memastikan arti setiap kolom isian. Input JSON: bagian[] = judul bagian bernomor, kolom[] = i nomor kolom, h halaman, t tipe (teks|centang|pilih), l label cetak yang diduga sistem, r seluruh teks cetak di baris itu, g judul baris/kelompok pilihan, n nama internal kolom, o daftar opsi. Gambar = halaman form yang sudah diberi nomor tepat pada kotak isian: MERAH = kolom teks, BIRU = centang/pilihan, HIJAU = bingkai pas foto. Baca gambar dan teks dengan teliti: untuk tiap nomor tentukan label cetak yang BENAR (teks terdekat yang menerangkan kotak itu, bukan teks baris lain), arti kolomnya, dan judul blok/bagiannya. Label yang sama sering muncul di blok berbeda (pemohon, pasangan, keluarga, atasan, kantor): sebut bloknya bila perlu, mis. PASANGAN - Nama Perusahaan. Jangan mengarang: bila tidak yakin, tulis teks terdekat apa adanya dan ragu=true. Kolom yang diisi bank/petugas ditandai bank=true. Balas HANYA JSON satu baris: {"kolom":[{"i":1,"l":"LABEL CETAK","a":"arti kolom 2-5 kata","b":"JUDUL BAGIAN","ragu":false,"bank":false}],"catatan":""}';
+const petaKey = (fp) => 'ffPeta:' + fp;
+const afLabel = (q) => String((q && (q.l2 || q.label)) || '').trim();
+function afPetaApply(af, list) {
+  const by = {}; af.fields.forEach((q) => { by[q.i] = q; });
+  let n = 0;
+  (list || []).forEach((x) => {
+    if (!x) return; const q = by[+x.i]; if (!q) return;
+    const l = String(x.l == null ? '' : x.l).replace(/\s+/g, ' ').trim().slice(0, 70);
+    const a = String(x.a == null ? '' : x.a).replace(/\s+/g, ' ').trim().slice(0, 60);
+    const b = String(x.b == null ? '' : x.b).replace(/\s+/g, ' ').trim().slice(0, 60);
+    if (l && l.length >= 2 && !/^(kolom|field|kotak|isi|teks|text|nomor)\b/i.test(l) && l.toLowerCase() !== String(q.label || '').toLowerCase()) { q.l2 = l; n++; }
+    if (a) q.arti = a;
+    if (b) q.blk = b;
+    if (x.bank) q.skip = true;
+    q.ragu = !!x.ragu || (!l && !a);
+  });
+  return n;
+}
+function afPetaSave(af, list) { try { localStorage.setItem(petaKey(af.fp), JSON.stringify({ v: 1, n: af.fields.length, tgl: getTodayISO(), k: list })); } catch (e) { /* abaikan */ } }
+function afPetaLoad(af) { try { const d = JSON.parse(localStorage.getItem(petaKey(af.fp)) || 'null'); if (d && d.v === 1 && d.n === af.fields.length && Array.isArray(d.k) && d.k.length) return d; } catch (e) { /* abaikan */ } return null; }
+async function afPeta(af) {
+  const c = afPetaLoad(af);
+  if (c) { afPetaApply(af, c.k); G.petaNote = 'Peta form tersimpan dipakai (' + (c.tgl || '-') + ') — form ini sudah dibaca AI sebelumnya.'; return 'cache'; }
+  const kolom = af.fields.filter((q) => q.kind !== 'foto').map((q) => { const o = { i: q.i, h: q.p + 1, t: q.kind }; if (q.label) o.l = q.label; if (q.grp) o.g = q.grp; if (q.row && q.row !== q.label) o.r = q.row.slice(0, 120); if (q.name) o.n = String(q.name).slice(0, 60); if (q.opts.length) o.o = q.opts.slice(0, 12); return o; });
+  if (!kolom.length) return false;
+  const chunks = []; let cur = [];
+  kolom.forEach((o) => { const hs = new Set(cur.map((z) => z.h)); if (cur.length >= 110 || (cur.length >= 40 && hs.size >= 4 && !hs.has(o.h))) { chunks.push(cur); cur = []; } cur.push(o); });
+  if (cur.length) chunks.push(cur);
+  const all = [];
+  for (let i = 0; i < chunks.length; i++) {
+    if (chunks.length > 1 && $('ffSt')) $('ffSt').textContent = '⏳ AI membaca form bank — bagian ' + (i + 1) + ' dari ' + chunks.length + '…';
+    const pgs = new Set(chunks[i].map((o) => o.h - 1));
+    const r = await AIAG.ai(PRMPETA, JSON.stringify({ tanggal_hari_ini: getTodayISO(), bagian: af.secs.map((t, ix) => (ix + 1) + '=' + t), kolom: chunks[i] }), afMarks(af, pgs), 0.1, 8000, 140000);
+    (r && r.kolom ? r.kolom : []).forEach((x) => all.push(x));
+  }
+  if (!all.length) throw new Error('AI tidak mengembalikan peta kolom');
+  const n = afPetaApply(af, all);
+  let ragu = af.fields.filter((q) => q.ragu).length;
+  if (ragu > af.fields.length * 0.4) { af.fields.forEach((q) => { q.ragu = false; }); ragu = -1; }
+  afPetaSave(af, all);
+  G.petaNote = 'AI membaca form: ' + n + ' label kolom dikoreksi' + (ragu > 0 ? ' · ' + ragu + ' kolom tidak jelas (dibiarkan kosong)' : ragu < 0 ? ' · banyak kolom tidak terbaca jelas — isian tetap dipetakan, cek hasilnya' : '') + ' · peta disimpan untuk form ini';
+  return true;
+}
+async function afPetaAgain() {
+  const af = G.af; if (!af) return;
+  try { localStorage.removeItem(petaKey(af.fp)); } catch (e) { /* abaikan */ }
+  af.fields.forEach((q) => { q.l2 = ''; q.arti = ''; q.blk = ''; q.ragu = false; });
+  G.petaNote = '⏳ Membaca ulang form…';
+  try { await afPeta(af); uiAF(); } catch (e) { G.petaNote = '⚠️ ' + (e.message || e); uiAF(); }
+}
+// ===== penjaga hasil AI: centang hanya bila datanya ada, satu pilihan per kelompok, nilai tidak menumpuk di kolom berlainan arti =====
+function afGuard(af, cx, prof) {
+  const note = []; let offC = 0, offD = 0, offK = 0;
+  const key = (v) => String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9@.]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const pool = [];
+  const walk = (o, d) => {
+    if (o == null || d > 4) return;
+    if (Array.isArray(o)) { o.forEach((x) => walk(x, d + 1)); return; }
+    if (typeof o === 'object') { Object.keys(o).forEach((k) => { if (k !== 'peringatan') walk(o[k], d + 1); }); return; }
+    const t = key(o); if (t && t.length > 1) pool.push(t);
+  };
+  walk(prof, 0); walk(cx && cx.sis, 0); walk(cx && cx.job, 0); walk(cx && cx.agunan, 0); walk(cx && cx.manLines, 0);
+  const flat = ' | ' + pool.join(' | ') + ' | ';
+  const IGN = /^(dan|atau|yang|untuk|dengan|dari|pada|di|ke|lainnya|lain|dll|dsb)$/;
+  const score = (txt) => { const w = key(txt).split(' ').filter((x) => x.length > 2 && !IGN.test(x)); if (!w.length) return 0; return w.filter((x) => flat.indexOf(x) >= 0).length / w.length; };
+  const MULTI = /alasan|maksud|tujuan|sumber dana|manfaat|fasilitas|setoran|jenis tabungan|kebutuhan|boleh pilih|pilih lebih|pilih semua/i;
+  const groups = {};
+  af.fields.filter((q) => q.kind === 'centang' && !q.skip).forEach((q) => { const gg = String(q.grp || '').trim(), rr = String(q.row || '').trim(); const g = gg || (rr ? '~' + rr : '#' + q.i); (groups[q.p + '|' + g] = groups[q.p + '|' + g] || []).push(q); });
+  Object.keys(groups).forEach((k) => {
+    const g = groups[k], gt = String(g[0].grp || g[0].row || '').trim();
+    if (g.length < 2 || !gt || MULTI.test(gt)) return;
+    let best = null, bs = 0;
+    g.forEach((q) => { const sc = score(q.label || q.row); if (sc > bs + 1e-9) { bs = sc; best = q; } });
+    const had = g.some((q) => q.on);
+    if (bs >= 0.5 && best) {
+      g.forEach((q) => { if (q !== best && q.on) { q.on = false; offC++; } });
+      if (!best.on) best.on = true;
+    } else if (had) {
+      g.forEach((q) => { if (q.on) { q.on = false; offC++; } });
+      note.push('Ceklis "' + gt.slice(0, 40) + '" dikosongkan — tidak ada datanya');
+    }
+  });
+  const clusters = {};
+  af.fields.filter((q) => q.kind === 'teks' && String(q.v || '').trim() && !q.skip).forEach((q) => { const k = key(q.v); if (k.length < 4 || /^[0-9 ]+$/.test(k)) return; (clusters[k] = clusters[k] || []).push(q); });
+  Object.keys(clusters).forEach((k) => {
+    const a = clusters[k].slice().sort((x, y) => x.p - y.p || y.r[3] - x.r[3] || x.r[0] - y.r[0]);
+    if (a.length <= 3) return;
+    a.slice(3).forEach((q) => { q.v = ''; offD++; });
+    note.push('"' + String(a[0].v).slice(0, 36) + '" muncul di ' + a.length + ' kolom — hanya 3 kolom pertama dipertahankan, sisanya dikosongkan');
+  });
+  const digits = (v) => String(v == null ? '' : v).replace(/\D/g, '');
+  af.fields.filter((q) => q.kind === 'teks' && String(q.v || '').trim() && !q.skip).forEach((q) => {
+    const v = String(q.v).trim(), t = afTxt(q), d = digits(v);
+    let bad = '';
+    if (/@/.test(v) && !/e ?mail|surel/.test(t)) bad = 'e-mail';
+    else if (/^\d{16}$/.test(v.replace(/[\s.\-]/g, '')) && !/nik|ktp|identitas|npwp/.test(t)) bad = 'NIK';
+    else if (/^(0|62)\d{8,13}$/.test(d) && !/hp|handphone|telepon|telp|phone|ponsel|fax|whatsapp|seluler|kontak/.test(t)) bad = 'nomor HP';
+    else if (v.length > 12 && /(^|[^a-z])(jl|jln|jalan|kp|kampung|ds|desa|kel|kec|kab|blok|rt|rw)([^a-z]|$)/i.test(v) && !/alamat|domisili|tinggal|lokasi|jalan|kampung|kelurahan|desa|kecamatan|penagihan/.test(t)) bad = 'alamat';
+    if (bad) { q.v = ''; offK++; note.push((afLabel(q) || q.name || 'kolom') + ': ' + bad + ' tidak boleh masuk kolom ini — dikosongkan'); }
+  });
+  return { offC, offD, offK, note: note.slice(0, 8) };
+}
 async function goAF(k, prof, af, s) {
   G.mode = 'af'; G.af = af; G.afClean = G.afClean !== false; G.tplNote = ''; G.ruleNote = ''; G.twoNote = ''; G.warn = [];
   try { const t = await tplGet(af.fp); if (t) { const n = tplApply(af, t); G.tplNote = 'Template form dikenali — ' + n + ' pengaturan kolom dipakai' + (t.nama ? ' (' + t.nama + ')' : ''); } } catch (e) { console.warn('tpl', e); }
+  G.petaNote = ''; G.guardNote = '';
   const cx = mkCtx(k, prof), now = new Date();
+  const P2 = (prof && prof.data_pasangan) || {};
+  G.ttdNm = { pemohon: String((prof && prof.nama) || k.nama || '').trim(), pasangan: String(P2.nama || (cx.sis && cx.sis.pasangan) || '').trim() };
+  // ---- AI membaca FORM BANK DULU (label & arti tiap kolom) sebelum data dipetakan
+  s.textContent = '⏳ AI membaca form bank (label & arti tiap kolom)…';
+  try { await afPeta(af); } catch (e) { console.warn('afPeta', e); G.petaNote = 'Peta form dilewati (' + (e.message || e) + ') — label kolom dibaca dari PDF.'; }
   s.textContent = '⏳ AI memetakan ' + af.fields.length + ' kolom isian…';
-  const payload = af.fields.filter((q) => q.kind !== 'foto' && !q.skip).map((q) => { const o = { i: q.i, h: q.p + 1, n: q.name, t: q.kind }; if (q.sec >= 0 && af.secs[q.sec]) o.s = q.sec + 1; if (q.label) o.l = q.label; if (q.grp) o.g = q.grp; if (q.row && q.row !== q.label) o.r = q.row; if (q.kind === 'teks') { o.k = q.nOv > 0 ? q.nOv : q.cap; if (q.nat || q.cell || q.nOv > 0) o.c = true; } if (q.opts.length) o.o = q.opts; return o; });
+  const payload = af.fields.filter((q) => q.kind !== 'foto' && !q.skip && !q.ragu).map((q) => { const o = { i: q.i, h: q.p + 1, n: q.name, t: q.kind }; if (q.sec >= 0 && af.secs[q.sec]) o.s = q.sec + 1; if (afLabel(q)) o.l = afLabel(q); if (q.arti) o.a = q.arti; if (q.blk) o.b = q.blk; if (q.grp) o.g = q.grp; if (q.row && q.row !== afLabel(q)) o.r = q.row; if (q.kind === 'teks') { o.k = q.nOv > 0 ? q.nOv : q.cap; if (q.nat || q.cell || q.nOv > 0) o.c = true; } if (q.opts.length) o.o = q.opts; return o; });
   // form dengan banyak kolom dibagi per kelompok (≤180 kolom/panggilan, batas dipilih di pergantian halaman) agar jawaban AI tidak terpotong
   const chunks = []; let cur = [];
   payload.forEach((o) => { if (cur.length >= 180 || (cur.length >= 120 && o.h !== cur[cur.length - 1].h)) { chunks.push(cur); cur = []; } cur.push(o); });
@@ -47570,12 +47702,12 @@ async function goAF(k, prof, af, s) {
   const aw = afApply(af, r); G.warn = G.warn.concat(aw);
   // ---- putaran 2: lengkapi kolom yang masih kosong (form bank lain sering punya banyak kolom & istilah berbeda)
   if (G.two !== false) {
-    const miss = af.fields.filter((q) => q.kind !== 'foto' && !q.skip && !afHas(q));
+    const miss = af.fields.filter((q) => q.kind !== 'foto' && !q.skip && !q.ragu && !afHas(q));
     if (miss.length) {
       try {
         s.textContent = '⏳ Melengkapi ' + miss.length + ' kolom yang masih kosong (putaran 2)…';
         const allow = {}; miss.forEach((q) => { allow[q.i] = 1; });
-        const p2 = miss.map((q) => { const o = { i: q.i, h: q.p + 1, n: q.name, t: q.kind }; if (q.sec >= 0 && af.secs[q.sec]) o.s = q.sec + 1; if (q.label) o.l = q.label; if (q.grp) o.g = q.grp; if (q.row && q.row !== q.label) o.r = q.row; if (q.opts.length) o.o = q.opts; if (q.kind === 'teks') { o.k = q.nOv > 0 ? q.nOv : q.cap; if (q.nat || q.cell || q.nOv > 0) o.c = true; } return o; });
+        const p2 = miss.map((q) => { const o = { i: q.i, h: q.p + 1, n: q.name, t: q.kind }; if (q.sec >= 0 && af.secs[q.sec]) o.s = q.sec + 1; if (afLabel(q)) o.l = afLabel(q); if (q.arti) o.a = q.arti; if (q.blk) o.b = q.blk; if (q.grp) o.g = q.grp; if (q.row && q.row !== afLabel(q)) o.r = q.row; if (q.opts.length) o.o = q.opts; if (q.kind === 'teks') { o.k = q.nOv > 0 ? q.nOv : q.cap; if (q.nat || q.cell || q.nOv > 0) o.c = true; } return o; });
         const r2 = await AIAG.ai(PRMP(cx.tg.panjang), JSON.stringify({ tanggal_hari_ini: cx.tg, identitas: prof, data_sistem: cx.sis, alamat_tinggal_pemohon: cx.alamatTinggal, catatan_sales_wa: cx.manLines.join('\n'), data_pekerjaan: cx.job, data_agunan: cx.agunan, bagian: af.secs.map((t, i) => (i + 1) + '=' + t), kolom_masih_kosong: p2 }), af.gen ? afMarks(af, new Set(miss.map((q) => q.p))) : null, 0.1, 9000, 150000);
         G.warn = G.warn.concat(afApply(af, { fields: (r2.fields || []).filter((x) => x && allow[+x.i]), peringatan: (r2.peringatan || []).slice(0, 3) }));
         G.twoNote = 'Putaran 2: ' + miss.filter(afHas).length + ' dari ' + miss.length + ' kolom kosong terisi';
@@ -47601,9 +47733,15 @@ async function goAF(k, prof, af, s) {
     G.ruleNote = (rr.fill || rr.fix || rr.rep) ? ('Aturan pasti: ' + rr.fill + ' kolom kosong diisi' + (rr.fix ? ' \u00b7 ' + rr.fix + ' data pasangan diperbaiki' : '') + (rr.rep ? ' \u00b7 ' + rr.rep + ' isi salah/duplikat dibetulkan' : '')) : '';
     G.warn = G.warn.concat(afApply(af, { fields: [], peringatan: [] }), rr.note || []);
   } catch (e) { console.warn('afRule', e); }
+  // ---- penjaga: centang hanya bila datanya ada (satu pilihan per kelompok) & nilai tidak menumpuk di kolom berlainan arti
+  try {
+    const gd = afGuard(af, cx, prof);
+    G.guardNote = (gd.offC || gd.offD || gd.offK) ? ('Penjaga isian: ' + [gd.offC ? gd.offC + ' centang keliru dibatalkan' : '', gd.offD ? gd.offD + ' nilai berulang dikosongkan' : '', gd.offK ? gd.offK + ' nilai di kolom salah dikosongkan' : ''].filter(Boolean).join(' · ')) : '';
+    if (gd.note.length) G.warn = G.warn.concat(gd.note);
+  } catch (e) { console.warn('afGuard', e); }
   s.textContent = '⏳ Menulis ke kolom PDF…'; await new Promise((ok) => setTimeout(ok, 20));
   uiAF(); await afRefresh();
-  s.textContent = '✅ Selesai — ' + af.fields.filter(afHas).length + ' dari ' + af.fields.length + ' kolom terisi' + (G.twoNote ? ' · ' + G.twoNote : '') + (G.ruleNote ? ' · ' + G.ruleNote : '') + '. Periksa pratinjau, koreksi bila perlu, lalu Download PDF.';
+  s.textContent = '✅ Selesai — ' + af.fields.filter(afHas).length + ' dari ' + af.fields.length + ' kolom terisi' + (G.twoNote ? ' · ' + G.twoNote : '') + (G.ruleNote ? ' · ' + G.ruleNote : '') + (G.guardNote ? ' · ' + G.guardNote : '') + '. Periksa pratinjau, koreksi bila perlu, lalu Download PDF.';
   try { formSave(); } catch (e) { console.warn('formSave', e); }
 }
 async function afDl(flat) {
@@ -47700,7 +47838,7 @@ const PRM=tgp=>'Kamu mengisi formulir aplikasi KPR bank. Gambar = form KOSONG, t
  'MERAH: v ditulis mulai kotak pertama, satu karakter per kotak (spasi juga satu kotak), tulis LENGKAP: bila lebih panjang dari jumlah kotak, sistem merapatkan huruf (sampai ±2 huruf per kotak); singkat (JL, KP, DS) hanya bila lebih dari 2× jumlah kotak, atau lanjutkan sisanya ke deretan merah berikutnya yang memang lanjutan kolom itu. Satu nomor hanya dipakai sekali. Segmen Blok, No., RT, RW, Kelurahan, Kecamatan, Kota/Kabupaten, Provinsi, Kode Pos masing-masing punya nomor sendiri; RT dan RW hanya angka. Nama jalan/kampung masuk deretan alamat panjang, nomor rumah ke kolom No., blok ke kolom Blok. '+
  'BIRU: hanya sertakan kotak yang HARUS dicentang (tanpa v). i = nomor biru tepat di KIRI teks pilihan yang dipilih; g = nama kolom, l = nama pilihan. '+
  'HIJAU: i = nomor bingkai; o = pemohon atau pasangan, menurut tulisan terdekat (Pemohon / Pasangan Pemohon / Tanda tangan Istri/Suami). '+
- 'Prioritas data: isian_manual (catatan WhatsApp sales), lalu identitas dokumen, lalu data_pekerjaan (hanya untuk bagian DATA PEKERJAAN: hasil baca dokumen pekerjaan/usaha & slip yang sudah diupload; catatan sales hanya melengkapi yang tidak ada di dokumen), lalu data_sistem. Tanggal lahir ditulis dd/mm/yyyy (sistem menyesuaikan ke jumlah kotak, mis. dd/mm/yy). Angka uang tanpa titik/koma. Jika form punya kotak terpisah untuk tempat lahir dan tanggal lahir, buat dua field. '+
+ RULE_JANGAN+'Prioritas data: isian_manual (catatan WhatsApp sales), lalu identitas dokumen, lalu data_pekerjaan (hanya untuk bagian DATA PEKERJAAN: hasil baca dokumen pekerjaan/usaha & slip yang sudah diupload; catatan sales hanya melengkapi yang tidak ada di dokumen), lalu data_sistem. Tanggal lahir ditulis dd/mm/yyyy (sistem menyesuaikan ke jumlah kotak, mis. dd/mm/yy). Angka uang tanpa titik/koma. Jika form punya kotak terpisah untuk tempat lahir dan tanggal lahir, buat dua field. '+
  'DATA PEMBIAYAAN: H. Jual/Nilai = harga; Uang Muka = uang_muka; Nilai Pembiayaan yang diajukan = plafond (bila kosong: harga dikurangi uang muka); Jangka Waktu dalam BULAN (tenor kecil di data sistem, mis. 25, berarti tahun, kalikan 12); Tipe Produk dan Penggunaan: centang yang paling sesuai data_sistem (KPR subsidi/FLPP = KPR Sejahtera; beli rumah = Pembelian Rumah) hanya bila yakin. '+
  'Jangan menimpa teks cetak apa pun. Kolom yang benar-benar tanpa penanda (mis. titik-titik tanggal di atas tanda tangan) boleh memakai x,y,w,h pecahan 0-1 dari halaman dengan p=nomor halaman dan t=text. '+
 'ALAMAT PASANGAN: pasangan dianggap serumah dengan pemohon. Blok data pasangan (alamat rumah) WAJIB diisi dari alamat_tinggal_pemohon (lengkap: blok, no, RT, RW, kelurahan, kecamatan, kota, provinsi, kode pos bila ada), BUKAN dari KTP/KK pasangan, meskipun berbeda. Blok "Alamat Rumah (diisi apabila tidak sesuai KTP)" milik pemohon diisi HANYA bila alamat_tinggal_pemohon.sumber bukan KTP; selain itu biarkan kosong. '+
@@ -47735,12 +47873,13 @@ async function go(){const s=$('ffSt'),k=db.konsumen.find(x=>x.id===($('dokKons')
       if(f.x==null||f.y==null||!G.pg[(+f.p||1)-1])return null;
       if(f.t!=='check'&&ffPh(String(f.v==null?'':f.v)))return null;
       return Object.assign(base,{p:(+f.p||1)-1,t:f.t||'text',x:+f.x,y:+f.y,w:+f.w||.2,h:+f.h||.02,v:String(f.v==null?'':f.v)});}).filter(Boolean);
-    G.nm=k.nama;G.bank=r.bank||k.bank||'';G.judul=r.judul||'';G.dx=0;G.dy=0;G.fs=100;G.fb=prof.foto_ktp||null;G.fb2=prof.foto_ktp_pasangan||null;G.warn=[].concat(prof.peringatan||[],r.peringatan||[]);
+    G.nm=k.nama;G.bank=r.bank||k.bank||'';G.judul=r.judul||'';G.ttdNm={pemohon:String(prof.nama||k.nama||'').trim(),pasangan:String(((prof.data_pasangan)||{}).nama||'').trim()};G.dx=0;G.dy=0;G.fs=100;G.fb=prof.foto_ktp||null;G.fb2=prof.foto_ktp_pasangan||null;G.warn=[].concat(prof.peringatan||[],r.peringatan||[]);
     {const phs={};G.fl.filter(f=>f.t==='photo').forEach(f=>{(phs[f.p]=phs[f.p]||[]).push(f);});
       Object.keys(phs).forEach(pp=>{const g=phs[pp].sort((a,b)=>a.x-b.x);if(g.length>=2){g.forEach(f=>{f.o='';});g[0].o='pasangan';g[g.length-1].o='pemohon';}else if(!g[0].o)g[0].o='pemohon';});
       G.warn=G.warn.concat(G._ig||[]);
       if(medHas('ttd')||medHas('ttd2')){let sg=[];if(/pdf/i.test(G.tpl.type||'')||/\.pdf$/i.test(G.tpl.name||'')){try{sg=await ffSigText(G.tpl,G.pg.length);}catch(e){console.warn('sig',e);}}
-        if(sg.length){G.fl=G.fl.filter(f=>f.t!=='ttd');sg.forEach(g=>{const pw=g.v[2]-g.v[0],ph2=g.v[3]-g.v[1];G.fl.push({s:'',g:'',l:'Tanda tangan '+g.kind,o:g.kind,on:true,ox:0,oy:0,free:true,sn:null,fixed:false,p:g.p,t:'ttd',v:'',x:(g.box[0]-g.v[0])/pw,y:(g.v[3]-g.box[3])/ph2,w:(g.box[2]-g.box[0])/pw,h:(g.box[3]-g.box[1])/ph2});});}}
+        if(sg.length){G.fl=G.fl.filter(f=>f.t!=='ttd');sg.forEach(g=>{const pw=g.v[2]-g.v[0],ph2=g.v[3]-g.v[1];G.fl.push({s:'',g:'',l:'Tanda tangan '+g.kind,o:g.kind,on:true,ox:0,oy:0,free:true,sn:null,fixed:false,p:g.p,t:'ttd',v:'',x:(g.box[0]-g.v[0])/pw,y:(g.v[3]-g.box[3])/ph2,w:(g.box[2]-g.box[0])/pw,h:(g.box[3]-g.box[1])/ph2});
+          const nmT=String((G.ttdNm||{})[g.kind]||'').trim(); if(nmT)G.fl.push({s:'',g:'',l:'Nama di bawah TTD '+g.kind,o:g.kind,on:true,ox:0,oy:0,free:true,sn:null,fixed:false,p:g.p,t:'text',v:nmT,x:(g.box[0]-g.v[0])/pw+(g.box[2]-g.box[0])*0.02/pw,y:(g.v[3]-g.box[1])/ph2+0.004,w:(g.box[2]-g.box[0])*0.96/pw,h:0.017});});}}
       else G.fl=G.fl.filter(f=>f.t!=='ttd');}
     s.textContent='⏳ Menyesuaikan posisi ke kotak form…';await new Promise(ok=>setTimeout(ok,30));
     const miss=snapAll();if(miss)G.warn.push(miss+' kolom teks tidak menemukan kotak (ditulis bebas di posisi tebakan AI) — seret di pratinjau bila perlu.');
@@ -47848,7 +47987,7 @@ window.FFAI={pick,go,dl,cl,lst,sv,dSave,dPdf,formSave,formUse,formDel,dft(){$('f
   afNk(i,v){const q=G.af&&G.af.fields[i-1];if(!q)return;const s=String(v).trim();q.nOv=s===''?null:Math.max(0,Math.min(80,parseInt(s,10)||0));afSoon();},
   afSk(i,v,el){const q=G.af&&G.af.fields[i-1];if(!q)return;q.skip=!!v;if(el&&el.closest){const r=el.closest('.ff-row');if(r)r.classList.toggle('ff-off',!!v);}afSoon();},
   sty(){styRead();styApply();},styTg(k){G.sty[k]=!G.sty[k];try{localStorage.setItem('ffSty',JSON.stringify(G.sty));}catch(e){}const b=$(k==='b'?'ffsB':'ffsI');if(b)b.classList.toggle('on',!!G.sty[k]);styApply();},
-  tplSave,tplDel,medOn,medDel,
+  tplSave,tplDel,medOn,medDel,petaAgain: afPetaAgain,
   adj(){styRead();G.dx=+$('ffdx').value||0;G.dy=+$('ffdy').value||0;G.fs=+$('fffs').value||100;G.up=$('ffup').checked;G.pas=$('ffpas').checked;redrawAll();},
   ed(i,v){G.fl[i].v=v;redraw(G.fl[i].p);},tg(i,v){G.fl[i].on=v;redraw(G.fl[i].p);},fr(i,v){G.fl[i].free=v;redraw(G.fl[i].p);}};
 init();
